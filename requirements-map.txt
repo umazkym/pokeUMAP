@@ -1,0 +1,7 @@
+# Reproducible environment for build_umap_coords.py and server-side projection.
+numpy==1.26.4
+scikit-learn==1.4.1.post1
+sentence-transformers==5.6.1
+umap-learn==0.5.5
+SudachiPy==0.6.11
+sudachidict_core==20260723

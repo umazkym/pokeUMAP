@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PokeDB - ポケモン類似度 2次元セマンティックマップ</title>
+    <meta name="description" content="第1〜第4世代（No.1〜500）のポケモン図鑑テキストを多言語AIモデルとUMAPで2次元マップ上に可視化。類似する特徴や生態を持つポケモンが直感的に探索できます。">
+    <meta property="og:title" content="PokeDB - ポケモン類似度 2次元マップ">
+    <meta property="og:description" content="AI自然言語処理とUMAP次元削減で可視化されたポケモンの生態・特徴マップ。直感的なズーム＆パン操作で探索可能！">
+    <meta property="og:type" content="website">
+    <meta name="twitter:card" content="summary_large_image">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header Controls -->
+        <header class="navbar">
+            <div class="brand">
+                <span class="pokeball-icon"></span>
+                <h1>PokeDB 類似度マップ <span>(1~500番)</span></h1>
+            </div>
+            
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="ポケモン名・番号で検索..." autocomplete="off">
+                <span class="search-icon">🔍</span>
+            </div>
+
+            <div class="type-filters" id="typeFilters">
+                <!-- Dynamically populated type badges -->
+            </div>
+
+            <div class="action-buttons">
+                <button id="addPokemonBtn" class="btn btn-primary">➕ ポケモン追加</button>
+                <button id="saveBtn" class="btn btn-success">💾 変更を保存</button>
+                <button id="resetBtn" class="btn btn-danger">🔄 初期化</button>
+            </div>
+        </header>
+
+        <!-- Main Map Area -->
+        <main class="map-wrapper">
+            <canvas id="mapCanvas"></canvas>
+
+            <!-- Map HUD overlay controls -->
+            <div class="map-controls">
+                <button id="zoomInBtn" title="ズームイン">＋</button>
+                <button id="zoomOutBtn" title="ズームアウト">－</button>
+                <button id="resetViewBtn" title="全体表示">🎯</button>
+                <div class="coord-indicator" id="coordIndicator">Zoom: 100% | X: 500, Y: 500</div>
+            </div>
+
+            <!-- Hover Tooltip -->
+            <div id="tooltip" class="tooltip hidden"></div>
+
+            <!-- Detail & Edit Sidebar -->
+            <aside id="sidebar" class="sidebar hidden">
+                <button class="close-sidebar-btn" id="closeSidebarBtn">&times;</button>
+                <div class="sidebar-header">
+                    <img id="sidebarArtwork" class="sidebar-artwork" src="" alt="artwork">
+                    <div class="sidebar-title-group">
+                        <span id="sidebarId" class="sidebar-id">No.000</span>
+                        <h2 id="sidebarName">ポケモン名</h2>
+                        <div id="sidebarKana" class="sidebar-kana">ひらがな</div>
+                        <span id="sidebarGenus" class="badge badge-genus">分類</span>
+                    </div>
+                </div>
+
+                <div class="sidebar-types" id="sidebarTypes"></div>
+
+                <div class="sidebar-section">
+                    <h3>図鑑説明</h3>
+                    <p id="sidebarFlavorText" class="flavor-text-content"></p>
+                </div>
+
+                <!-- Pure Keywords & Context Analysis Section -->
+                <div class="sidebar-section similarity-section">
+                    <div class="section-title-with-badge">
+                        <h3>📍 この位置のキーワード・文脈</h3>
+                        <span class="badge badge-ai">自動抽出</span>
+                    </div>
+                    <div id="sidebarKeywords" class="keyword-tags"></div>
+                    <div id="sidebarAiReason" class="ai-reason-summary"></div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>マップ座標編集</h3>
+                    <div class="coord-inputs">
+                        <label>X: <input type="number" id="coordXInput" step="0.1"></label>
+                        <label>Y: <input type="number" id="coordYInput" step="0.1"></label>
+                        <button id="applyCoordBtn" class="btn btn-sm btn-secondary">座標を更新</button>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>種族値 (合計: <span id="sidebarBst">0</span>)</h3>
+                    <div class="stats-grid" id="sidebarStats"></div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <!-- Modal: Add New Pokemon -->
+    <div id="addModal" class="modal hidden">
+        <div class="modal-content glass-card">
+            <div class="modal-header">
+                <h2>新規ポケモンの追加</h2>
+                <button id="closeModalBtn" class="close-btn">&times;</button>
+            </div>
+            <form id="addPokemonForm" onsubmit="return false;">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>ポケモン名 (日本語) *</label>
+                        <input type="text" id="addNameJa" required placeholder="例: カスタムピカチュウ">
+                    </div>
+                    <div class="form-group">
+                        <label>英語名</label>
+                        <input type="text" id="addNameEn" placeholder="e.g. Custom Pikachu">
+                    </div>
+                    <div class="form-group full-width">
+                        <label>分類 (genus_ja) *</label>
+                        <input type="text" id="addGenusJa" required placeholder="例: でんきねずみポケモン">
+                    </div>
+                    <div class="form-group full-width">
+                        <label>図鑑説明文 / 自己紹介・自由文 (flavor_text_ja) *</label>
+                        <textarea id="addFlavorTextJa" rows="3" required placeholder="例: 強力な電気を体に蓄えて放電する特異な体質のポケモン。または『休日はカフェ巡りをしてのんびり過ごすのが好きです』などの自己紹介文"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>タイプ1 *</label>
+                        <select id="addType1" required>
+                            <option value="grass">grass (くさ)</option>
+                            <option value="fire">fire (ほのお)</option>
+                            <option value="water">water (みず)</option>
+                            <option value="electric" selected>electric (でんき)</option>
+                            <option value="normal">normal (ノーマル)</option>
+                            <option value="ice">ice (こおり)</option>
+                            <option value="fighting">fighting (かくとう)</option>
+                            <option value="poison">poison (どく)</option>
+                            <option value="ground">ground (じめん)</option>
+                            <option value="flying">flying (ひこう)</option>
+                            <option value="psychic">psychic (エスパー)</option>
+                            <option value="bug">bug (むし)</option>
+                            <option value="rock">rock (いわ)</option>
+                            <option value="ghost">ghost (ゴースト)</option>
+                            <option value="dragon">dragon (ドラゴン)</option>
+                            <option value="steel">steel (はがね)</option>
+                            <option value="fairy">fairy (フェアリー)</option>
+                            <option value="dark">dark (あく)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>タイプ2</label>
+                        <select id="addType2">
+                            <option value="">なし</option>
+                            <option value="grass">grass (くさ)</option>
+                            <option value="fire">fire (ほのお)</option>
+                            <option value="water">water (みず)</option>
+                            <option value="electric">electric (でんき)</option>
+                            <option value="normal">normal (ノーマル)</option>
+                            <option value="ice">ice (こおり)</option>
+                            <option value="fighting">fighting (かくとう)</option>
+                            <option value="poison">poison (どく)</option>
+                            <option value="ground">ground (じめん)</option>
+                            <option value="flying">flying (ひこう)</option>
+                            <option value="psychic">psychic (エスパー)</option>
+                            <option value="bug">bug (むし)</option>
+                            <option value="rock">rock (いわ)</option>
+                            <option value="ghost">ghost (ゴースト)</option>
+                            <option value="dragon">dragon (ドラゴン)</option>
+                            <option value="steel">steel (はがね)</option>
+                            <option value="fairy">fairy (フェアリー)</option>
+                            <option value="dark">dark (あく)</option>
+                        </select>
+                    </div>
+                    <div class="form-group full-width">
+                        <label>ドット絵アイコン URL</label>
+                        <input type="url" id="addSpriteUrl" placeholder="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png">
+                    </div>
+                    <div class="form-group full-width coord-calc-box">
+                        <div class="coord-inputs">
+                            <label>X座標: <input type="number" id="addX" step="0.1" value="500.0"></label>
+                            <label>Y座標: <input type="number" id="addY" step="0.1" value="500.0"></label>
+                        </div>
+                        <button type="button" id="calcAiCoordBtn" class="btn btn-secondary">🤖 AIで最適座標を自動計算</button>
+                    </div>
+                    <!-- AI Reason Box in Modal -->
+                    <div id="addAiReasonBox" class="form-group full-width ai-reason-box hidden">
+                        <div class="ai-reason-header">💡 AI配置推定キーワード</div>
+                        <div id="addAiReasonContent" class="ai-reason-text"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" id="cancelAddBtn" class="btn btn-secondary">キャンセル</button>
+                    <button type="submit" id="confirmAddBtn" class="btn btn-primary">追加してマップにプロット</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="app.js?v=semantic-map-v3"></script>
+</body>
+</html>

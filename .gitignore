@@ -1,0 +1,27 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pkl
+*.sqlite3
+*.db
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Large raw database dump (only keep map json)
+pokemon.db
+pokemon_database.json
+umap_model.pkl
+
+# Temporary and debug scripts
+scratch_*.py
+
+# OS generated files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
