@@ -15,6 +15,7 @@
     let searchQuery = '';
     let pendingAiClusterId = null;
     let pendingAiClusterKeywords = '';
+    let viewMode = readViewModeFromUrl();
 
     // Canvas Transform State
     let scale = 1.0;
@@ -41,6 +42,7 @@
     const searchInput = document.getElementById('searchInput');
     const typeFiltersContainer = document.getElementById('typeFilters');
     const coordIndicator = document.getElementById('coordIndicator');
+    const viewTabs = [...document.querySelectorAll('[data-view-mode]')];
 
     // Type Color Palette
     const TYPE_COLORS = {
@@ -50,6 +52,16 @@
         rock: '#b45309', ghost: '#6b21a8', dragon: '#7c3aed', steel: '#64748b',
         fairy: '#f472b6', dark: '#334155'
     };
+
+    // Display-only projection: preserve semantic source coordinates while making
+    // topic structure easier to read at a glance.
+    const LAYOUT_CONTRAST = Object.freeze({
+        clusterSeparation: 1.45,
+        clusterCohesion: 0.70,
+        viewportPadding: 58
+    });
+    let layoutCenter = { x: 500, y: 500 };
+    let clusterLayout = new Map();
 
     // Universal Stop Words for Domain-Agnostic Concept Tagging
     const GENERAL_STOP_WORDS = new Set([
@@ -68,6 +80,7 @@
 
     // Initialize Application
     async function init() {
+        updateViewTabs();
         resizeCanvas();
         window.addEventListener('resize', () => {
             resizeCanvas();
@@ -143,6 +156,8 @@
                 }
             });
 
+            refreshLayoutProjection();
+
             preloadImages();
             showToast(`Loaded ${pokemons.length} elements with ${mapClusters.length} verified topic clusters.`);
             requestRender();
@@ -209,14 +224,174 @@
         };
     }
 
+    function readViewModeFromUrl() {
+        return new URLSearchParams(window.location.search).get('view') === 'after' ? 'after' : 'before';
+    }
+
+    function isEnhancedView() {
+        return viewMode === 'after';
+    }
+
+    function updateViewTabs() {
+        viewTabs.forEach(tab => {
+            const active = tab.dataset.viewMode === viewMode;
+            tab.classList.toggle('active', active);
+            tab.setAttribute('aria-selected', String(active));
+        });
+        document.body.dataset.viewMode = viewMode;
+    }
+
+    function setViewMode(nextMode, updateHistory = true) {
+        const normalizedMode = nextMode === 'after' ? 'after' : 'before';
+        viewMode = normalizedMode;
+        updateViewTabs();
+
+        if (updateHistory) {
+            const url = new URL(window.location.href);
+            url.searchParams.set('view', normalizedMode);
+            window.history.pushState({ viewMode: normalizedMode }, '', url);
+        }
+
+        resetView();
+        requestRender();
+    }
+
+    function colorWithAlpha(color, alpha) {
+        const match = /^#([0-9a-f]{6})$/i.exec(color || '');
+        if (!match) return `rgba(56, 189, 248, ${alpha})`;
+        const value = parseInt(match[1], 16);
+        return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
+    }
+
+    function refreshLayoutProjection() {
+        const totalWeight = mapClusters.reduce((sum, cluster) => sum + Math.max(1, cluster.count || 1), 0);
+        if (totalWeight) {
+            layoutCenter = {
+                x: mapClusters.reduce((sum, cluster) => sum + cluster.cx * Math.max(1, cluster.count || 1), 0) / totalWeight,
+                y: mapClusters.reduce((sum, cluster) => sum + cluster.cy * Math.max(1, cluster.count || 1), 0) / totalWeight
+            };
+        }
+
+        const projections = mapClusters.map(cluster => {
+            const displayCenter = {
+                x: layoutCenter.x + (cluster.cx - layoutCenter.x) * LAYOUT_CONTRAST.clusterSeparation,
+                y: layoutCenter.y + (cluster.cy - layoutCenter.y) * LAYOUT_CONTRAST.clusterSeparation
+            };
+            const memberDistances = pokemons
+                .filter(pokemon => pokemon.cluster_id === cluster.id)
+                .map(pokemon => Math.hypot(pokemon.x - cluster.cx, pokemon.y - cluster.cy) * LAYOUT_CONTRAST.clusterCohesion)
+                .sort((left, right) => left - right);
+            const percentileIndex = Math.min(
+                Math.max(0, memberDistances.length - 1),
+                Math.floor(memberDistances.length * 0.88)
+            );
+            const fieldRadius = Math.max(72, Math.min(235, (memberDistances[percentileIndex] || 80) + 28));
+            return {
+                cluster,
+                displayCenter,
+                desiredCenter: { ...displayCenter },
+                fieldRadius
+            };
+        });
+
+        // Resolve overlapping macro fields while gently retaining the UMAP topology.
+        for (let iteration = 0; iteration < 80; iteration++) {
+            const movement = projections.map(projection => ({
+                x: (projection.desiredCenter.x - projection.displayCenter.x) * 0.025,
+                y: (projection.desiredCenter.y - projection.displayCenter.y) * 0.025
+            }));
+            for (let leftIndex = 0; leftIndex < projections.length; leftIndex++) {
+                for (let rightIndex = leftIndex + 1; rightIndex < projections.length; rightIndex++) {
+                    const left = projections[leftIndex];
+                    const right = projections[rightIndex];
+                    let dx = left.displayCenter.x - right.displayCenter.x;
+                    let dy = left.displayCenter.y - right.displayCenter.y;
+                    let distance = Math.hypot(dx, dy);
+                    const minimumDistance = (left.fieldRadius + right.fieldRadius) * 0.74;
+                    if (distance >= minimumDistance) continue;
+                    if (distance < 0.001) {
+                        const angle = (left.cluster.id * 137.508 + right.cluster.id * 47) * Math.PI / 180;
+                        dx = Math.cos(angle);
+                        dy = Math.sin(angle);
+                        distance = 1;
+                    }
+                    const push = (minimumDistance - distance) * 0.16;
+                    const pushX = dx / distance * push;
+                    const pushY = dy / distance * push;
+                    movement[leftIndex].x += pushX;
+                    movement[leftIndex].y += pushY;
+                    movement[rightIndex].x -= pushX;
+                    movement[rightIndex].y -= pushY;
+                }
+            }
+            projections.forEach((projection, index) => {
+                projection.displayCenter.x += movement[index].x;
+                projection.displayCenter.y += movement[index].y;
+            });
+        }
+
+        clusterLayout = new Map(projections.map(projection => [projection.cluster.id, projection]));
+    }
+
+    function getPokemonDisplayPosition(pokemon) {
+        if (!isEnhancedView()) return { x: pokemon.x, y: pokemon.y };
+        const projection = clusterLayout.get(pokemon.cluster_id);
+        if (!projection) return { x: pokemon.x, y: pokemon.y };
+        return {
+            x: projection.displayCenter.x + (pokemon.x - projection.cluster.cx) * LAYOUT_CONTRAST.clusterCohesion,
+            y: projection.displayCenter.y + (pokemon.y - projection.cluster.cy) * LAYOUT_CONTRAST.clusterCohesion
+        };
+    }
+
+    function pokemonToScreen(pokemon) {
+        const display = getPokemonDisplayPosition(pokemon);
+        return worldToScreen(display.x, display.y);
+    }
+
+    function displayToPokemonCoordinate(displayX, displayY, pokemon) {
+        if (!isEnhancedView()) return { x: displayX, y: displayY };
+        const projection = clusterLayout.get(pokemon.cluster_id);
+        if (!projection) return { x: displayX, y: displayY };
+        return {
+            x: projection.cluster.cx + (displayX - projection.displayCenter.x) / LAYOUT_CONTRAST.clusterCohesion,
+            y: projection.cluster.cy + (displayY - projection.displayCenter.y) / LAYOUT_CONTRAST.clusterCohesion
+        };
+    }
+
+    function getDisplayBounds() {
+        if (!pokemons.length) return { minX: 0, minY: 0, maxX: 1000, maxY: 1000 };
+        const positions = pokemons.map(getPokemonDisplayPosition);
+        return positions.reduce((bounds, position) => ({
+            minX: Math.min(bounds.minX, position.x),
+            minY: Math.min(bounds.minY, position.y),
+            maxX: Math.max(bounds.maxX, position.x),
+            maxY: Math.max(bounds.maxY, position.y)
+        }), {
+            minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity
+        });
+    }
+
     // Reset View
     function resetView() {
         const containerW = canvas.width;
         const containerH = canvas.height;
+        if (!isEnhancedView()) {
+            scale = Math.min(containerW / 1150, containerH / 1150);
+            translateX = (containerW - 1000 * scale) / 2;
+            translateY = (containerH - 1000 * scale) / 2;
+            requestRender();
+            return;
+        }
 
-        scale = Math.min(containerW / 1150, containerH / 1150);
-        translateX = (containerW - 1000 * scale) / 2;
-        translateY = (containerH - 1000 * scale) / 2;
+        const bounds = getDisplayBounds();
+        const spanX = Math.max(1, bounds.maxX - bounds.minX);
+        const spanY = Math.max(1, bounds.maxY - bounds.minY);
+        const availableW = Math.max(1, containerW - LAYOUT_CONTRAST.viewportPadding * 2);
+        const availableH = Math.max(1, containerH - LAYOUT_CONTRAST.viewportPadding * 2);
+
+        scale = Math.min(1.25, availableW / spanX, availableH / spanY);
+        translateX = containerW / 2 - ((bounds.minX + bounds.maxX) / 2) * scale;
+        translateY = containerH / 2 - ((bounds.minY + bounds.maxY) / 2) * scale;
         requestRender();
     }
 
@@ -225,9 +400,10 @@
         const containerW = canvas.width;
         const containerH = canvas.height;
 
+        const display = getPokemonDisplayPosition(p);
         scale = 1.6;
-        translateX = (containerW / 2) - (p.x * scale);
-        translateY = (containerH / 2) - (p.y * scale);
+        translateX = (containerW / 2) - (display.x * scale);
+        translateY = (containerH / 2) - (display.y * scale);
         selectedPokemon = p;
         openSidebar(p);
         requestRender();
@@ -319,18 +495,21 @@
     }
 
     function getNodeSize() {
-        return Math.max(14, Math.min(40, 24 * scale));
+        return isEnhancedView()
+            ? Math.max(12, Math.min(40, 21 * scale))
+            : Math.max(14, Math.min(40, 24 * scale));
     }
 
     // Place every macro label in screen space, avoiding both sprites and earlier labels.
     function drawAreaLabels(baseSize) {
         if (!mapClusters || !mapClusters.length) return;
 
+        const enhanced = isEnhancedView();
         ctx.save();
         const scaleFactor = Math.min(1.2, Math.max(0.75, scale));
         const nodePadding = 3;
         const nodeRects = pokemons.map(p => {
-            const pos = worldToScreen(p.x, p.y);
+            const pos = pokemonToScreen(p);
             return {
                 left: pos.x - baseSize / 2 - nodePadding,
                 right: pos.x + baseSize / 2 + nodePadding,
@@ -342,10 +521,18 @@
 
         const areas = [...mapClusters].sort((a, b) => b.count - a.count || a.id - b.id);
         areas.forEach(area => {
-            const anchor = worldToScreen(area.cx, area.cy);
+            const projection = clusterLayout.get(area.id);
+            const displayCenter = enhanced && projection
+                ? projection.displayCenter
+                : { x: area.cx, y: area.cy };
+            const anchor = worldToScreen(displayCenter.x, displayCenter.y);
+            if (enhanced && (
+                anchor.x < -40 || anchor.x > canvas.width + 40 ||
+                anchor.y < -40 || anchor.y > canvas.height + 40
+            )) return;
             const text = area.keywords;
             const fontSize = Math.round(11 * scaleFactor);
-            ctx.font = `600 ${fontSize}px "Noto Sans JP", sans-serif`;
+            ctx.font = `${enhanced ? 700 : 600} ${fontSize}px "Noto Sans JP", sans-serif`;
             const textMetrics = ctx.measureText(text);
             const boxPaddingX = 14 * scaleFactor;
             const boxPaddingY = 6 * scaleFactor;
@@ -368,9 +555,16 @@
                 !nodeRects.some(nodeRect => rectanglesOverlap(rect, nodeRect, 1))
             );
 
+            const fieldRadius = (projection ? projection.fieldRadius : 100) * scale;
+            const labelTarget = {
+                x: anchor.x,
+                y: enhanced
+                    ? anchor.y - Math.min(128, Math.max(44, fieldRadius * 0.72))
+                    : anchor.y
+            };
             const center = {
-                x: Math.max(8 + boxW / 2, Math.min(canvas.width - 8 - boxW / 2, anchor.x)),
-                y: Math.max(8 + boxH / 2, Math.min(canvas.height - 8 - boxH / 2, anchor.y))
+                x: Math.max(8 + boxW / 2, Math.min(canvas.width - 8 - boxW / 2, labelTarget.x)),
+                y: Math.max(8 + boxH / 2, Math.min(canvas.height - 8 - boxH / 2, labelTarget.y))
             };
             const candidateCenters = [{ x: center.x, y: center.y }];
             for (let ring = 1; ring <= 10; ring++) {
@@ -430,19 +624,24 @@
                 );
                 ctx.lineTo(rect.cx, rect.cy);
                 ctx.strokeStyle = area.color || '#38bdf8';
-                ctx.globalAlpha = 0.38;
-                ctx.lineWidth = 1;
+                ctx.globalAlpha = enhanced ? 0.55 : 0.38;
+                ctx.lineWidth = enhanced ? 1.25 : 1;
                 ctx.stroke();
                 ctx.globalAlpha = 1;
             }
 
+            if (enhanced) {
+                ctx.shadowColor = colorWithAlpha(area.color || '#38bdf8', 0.45);
+                ctx.shadowBlur = 10;
+            }
             ctx.beginPath();
             ctx.roundRect(rect.left, rect.top, boxW, boxH, cornerR);
-            ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+            ctx.fillStyle = enhanced ? 'rgba(8, 15, 29, 0.96)' : 'rgba(15, 23, 42, 0.94)';
             ctx.fill();
-            ctx.lineWidth = 1.0;
+            ctx.shadowBlur = 0;
+            ctx.lineWidth = enhanced ? 1.4 : 1;
             ctx.strokeStyle = area.color || '#38bdf8';
-            ctx.globalAlpha = 0.72;
+            ctx.globalAlpha = enhanced ? 0.92 : 0.72;
             ctx.stroke();
             ctx.globalAlpha = 1.0;
             ctx.textAlign = 'center';
@@ -471,6 +670,95 @@
         ctx.restore();
     }
 
+    function drawClusterFields() {
+        if (!isEnhancedView() || !mapClusters.length) return;
+
+        const fieldDebug = [];
+        ctx.save();
+        [...mapClusters]
+            .sort((left, right) => right.count - left.count || left.id - right.id)
+            .forEach(area => {
+                const projection = clusterLayout.get(area.id);
+                if (!projection) return;
+                const center = worldToScreen(projection.displayCenter.x, projection.displayCenter.y);
+                const radius = projection.fieldRadius * scale;
+                if (
+                    center.x + radius < 0 || center.x - radius > canvas.width ||
+                    center.y + radius < 0 || center.y - radius > canvas.height
+                ) return;
+
+                const color = area.color || '#38bdf8';
+                const gradient = ctx.createRadialGradient(
+                    center.x, center.y, Math.max(3, radius * 0.08),
+                    center.x, center.y, Math.max(4, radius)
+                );
+                gradient.addColorStop(0, colorWithAlpha(color, 0.17));
+                gradient.addColorStop(0.58, colorWithAlpha(color, 0.07));
+                gradient.addColorStop(1, colorWithAlpha(color, 0));
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.setLineDash([5, 8]);
+                ctx.lineWidth = 1;
+                ctx.strokeStyle = colorWithAlpha(color, 0.28);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                fieldDebug.push({ clusterId: area.id, center, radius });
+            });
+        ctx.restore();
+
+        window.__mapDebug = window.__mapDebug || {};
+        window.__mapDebug.clusterFields = fieldDebug;
+    }
+
+    function getNearestSemanticNeighbors(target, limit = 4) {
+        return pokemons
+            .filter(candidate => candidate.id !== target.id)
+            .map(candidate => ({
+                pokemon: candidate,
+                distance: Math.hypot(candidate.x - target.x, candidate.y - target.y)
+            }))
+            .sort((left, right) => left.distance - right.distance || left.pokemon.id - right.pokemon.id)
+            .slice(0, limit);
+    }
+
+    function drawSimilarityLinks() {
+        if (!isEnhancedView() || !selectedPokemon) return;
+
+        const start = pokemonToScreen(selectedPokemon);
+        const neighbors = getNearestSemanticNeighbors(selectedPokemon);
+        const cluster = getClusterForPokemon(selectedPokemon);
+        const color = cluster && cluster.color ? cluster.color : '#38bdf8';
+
+        ctx.save();
+        neighbors.forEach((item, index) => {
+            const end = pokemonToScreen(item.pokemon);
+            const gradient = ctx.createLinearGradient(start.x, start.y, end.x, end.y);
+            gradient.addColorStop(0, colorWithAlpha(color, 0.9));
+            gradient.addColorStop(1, colorWithAlpha(color, 0.18));
+            ctx.beginPath();
+            ctx.moveTo(start.x, start.y);
+            ctx.lineTo(end.x, end.y);
+            ctx.strokeStyle = gradient;
+            ctx.lineWidth = Math.max(1, 2.4 - index * 0.3);
+            ctx.shadowColor = colorWithAlpha(color, 0.65);
+            ctx.shadowBlur = 7;
+            ctx.stroke();
+
+            ctx.shadowBlur = 0;
+            ctx.beginPath();
+            ctx.arc(end.x, end.y, 3.2, 0, Math.PI * 2);
+            ctx.fillStyle = colorWithAlpha(color, 0.8 - index * 0.1);
+            ctx.fill();
+        });
+        ctx.restore();
+
+        window.__mapDebug = window.__mapDebug || {};
+        window.__mapDebug.similarityNeighborIds = neighbors.map(item => item.pokemon.id);
+    }
+
     // Core Drawing Frame Routine
     function drawFrame() {
         renderRequested = false;
@@ -481,11 +769,24 @@
         // 1. Background Grid
         drawGrid();
 
-        // 2. Draw nodes at a compact overview size. Labels are placed afterwards.
+        const enhanced = isEnhancedView();
+        if (enhanced) {
+            // 2. Soft topic fields expose the macro structure without hiding nodes.
+            drawClusterFields();
+
+            // 3. Draw the selected element's nearest semantic relationships.
+            drawSimilarityLinks();
+        } else {
+            window.__mapDebug = window.__mapDebug || {};
+            window.__mapDebug.clusterFields = [];
+            window.__mapDebug.similarityNeighborIds = [];
+        }
+
+        // 4. Draw nodes at a compact overview size. Labels are placed afterwards.
         const baseSize = getNodeSize();
 
         pokemons.forEach(p => {
-            const pos = worldToScreen(p.x, p.y);
+            const pos = pokemonToScreen(p);
 
             // Filter Opacity Check
             let opacity = 1.0;
@@ -507,9 +808,23 @@
 
             const isSelected = selectedPokemon && selectedPokemon.id === p.id;
             const isHovered = hoveredPokemon && hoveredPokemon.id === p.id;
+            const cluster = getClusterForPokemon(p);
+            const clusterColor = cluster && cluster.color ? cluster.color : '#64748b';
 
-            // Highlight ring ONLY when selected or hovered
-            if (isSelected || isHovered) {
+            if (enhanced) {
+                // A dark plate and cluster-colored edge keep every sprite legible.
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, (baseSize / 2) + 1.25, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(3, 7, 18, 0.88)';
+                ctx.fill();
+                ctx.lineWidth = isSelected ? 2.5 : (isHovered ? 1.8 : 0.85);
+                ctx.strokeStyle = isSelected ? '#f8fafc' : clusterColor;
+                ctx.shadowColor = colorWithAlpha(clusterColor, isSelected ? 0.85 : 0.42);
+                ctx.shadowBlur = isSelected ? 10 : 3;
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+            } else if (isSelected || isHovered) {
+                // Preserve the original plot's selection treatment.
                 ctx.beginPath();
                 ctx.arc(pos.x, pos.y, (baseSize / 2) + 3, 0, Math.PI * 2);
                 ctx.lineWidth = isSelected ? 3 : 2;
@@ -538,6 +853,14 @@
 
             // Draw Text Label ONLY when selected or hovered
             if (isSelected || isHovered) {
+                if (enhanced) {
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, (baseSize / 2) + 4, 0, Math.PI * 2);
+                    ctx.lineWidth = isSelected ? 2.4 : 1.6;
+                    ctx.strokeStyle = isSelected ? clusterColor : '#67e8f9';
+                    ctx.stroke();
+                }
+
                 ctx.font = '700 12px "Noto Sans JP", sans-serif';
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'alphabetic';
@@ -551,7 +874,7 @@
             ctx.globalAlpha = 1.0;
         });
 
-        // 3. Coherence-validated topic labels stay above nodes and never cover them.
+        // 5. Coherence-validated topic labels stay above nodes and never cover them.
         drawAreaLabels(baseSize);
 
         window.__mapDebug = window.__mapDebug || {};
@@ -559,9 +882,24 @@
         window.__mapDebug.nodeSize = baseSize;
         window.__mapDebug.clusterCount = mapClusters.length;
         window.__mapDebug.modelVersion = mapMeta.model_version || null;
+        window.__mapDebug.viewMode = viewMode;
+        window.__mapDebug.layoutContrast = {
+            clusterSeparation: LAYOUT_CONTRAST.clusterSeparation,
+            clusterCohesion: LAYOUT_CONTRAST.clusterCohesion,
+            layoutCenter,
+            displayBounds: getDisplayBounds(),
+            clusterCenters: [...clusterLayout.values()].map(projection => ({
+                clusterId: projection.cluster.id,
+                source: { x: projection.cluster.cx, y: projection.cluster.cy },
+                display: projection.displayCenter,
+                fieldRadius: projection.fieldRadius
+            }))
+        };
 
         // Update HUD indicator
-        coordIndicator.textContent = `Zoom: ${Math.round(scale * 100)}% | Pkms: ${pokemons.length}`;
+        coordIndicator.textContent = enhanced
+            ? `Zoom: ${Math.round(scale * 100)}% | ${pokemons.length}匹 | 近いほど類似`
+            : `Zoom: ${Math.round(scale * 100)}% | Pkms: ${pokemons.length}`;
     }
 
     // Draw Grid Lines
@@ -595,7 +933,7 @@
 
         for (let i = pokemons.length - 1; i >= 0; i--) {
             const p = pokemons[i];
-            const pos = worldToScreen(p.x, p.y);
+            const pos = pokemonToScreen(p);
             const dist = Math.hypot(pos.x - sx, pos.y - sy);
             if (dist <= threshold) {
                 return p;
@@ -606,6 +944,17 @@
 
     // Setup Interaction Listeners
     function setupEventListeners() {
+        viewTabs.forEach(tab => {
+            tab.addEventListener('click', event => {
+                if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                event.preventDefault();
+                setViewMode(tab.dataset.viewMode, true);
+            });
+        });
+        window.addEventListener('popstate', () => {
+            setViewMode(readViewModeFromUrl(), false);
+        });
+
         // Wheel Zoom
         canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
@@ -635,8 +984,9 @@
                 isDraggingNode = true;
                 
                 const worldPos = screenToWorld(mousePos.x, mousePos.y);
-                dragOffsetX = hitPokemon.x - worldPos.x;
-                dragOffsetY = hitPokemon.y - worldPos.y;
+                const displayPos = getPokemonDisplayPosition(hitPokemon);
+                dragOffsetX = displayPos.x - worldPos.x;
+                dragOffsetY = displayPos.y - worldPos.y;
                 
                 canvas.style.cursor = 'grabbing';
             } else {
@@ -657,8 +1007,13 @@
                 if (moveDist > 3) {
                     hasDraggedNode = true;
                     const worldPos = screenToWorld(mousePos.x, mousePos.y);
-                    draggedPokemon.x = Math.max(0, Math.min(1000, Math.round((worldPos.x + dragOffsetX) * 100) / 100));
-                    draggedPokemon.y = Math.max(0, Math.min(1000, Math.round((worldPos.y + dragOffsetY) * 100) / 100));
+                    const semanticPos = displayToPokemonCoordinate(
+                        worldPos.x + dragOffsetX,
+                        worldPos.y + dragOffsetY,
+                        draggedPokemon
+                    );
+                    draggedPokemon.x = Math.max(0, Math.min(1000, Math.round(semanticPos.x * 100) / 100));
+                    draggedPokemon.y = Math.max(0, Math.min(1000, Math.round(semanticPos.y * 100) / 100));
 
                     if (selectedPokemon && selectedPokemon.id === draggedPokemon.id) {
                         document.getElementById('coordXInput').value = draggedPokemon.x;

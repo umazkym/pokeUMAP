@@ -44,6 +44,20 @@
         <main class="map-wrapper">
             <canvas id="mapCanvas"></canvas>
 
+            <!-- Shareable before/after view tabs -->
+            <nav class="layout-view-tabs" role="tablist" aria-label="プロット表示モード">
+                <a id="beforeViewTab" class="layout-view-tab active" role="tab" aria-selected="true"
+                   href="?view=before" data-view-mode="before">
+                    <span class="view-tab-label">修正前</span>
+                    <span class="view-tab-note">オリジナル</span>
+                </a>
+                <a id="afterViewTab" class="layout-view-tab" role="tab" aria-selected="false"
+                   href="?view=after" data-view-mode="after">
+                    <span class="view-tab-label">修正後</span>
+                    <span class="view-tab-note">メリハリ表示</span>
+                </a>
+            </nav>
+
             <!-- Map HUD overlay controls -->
             <div class="map-controls">
                 <button id="zoomInBtn" title="ズームイン">＋</button>

@@ -237,6 +237,73 @@ body {
     cursor: grabbing;
 }
 
+/* Shareable original/enhanced plot tabs */
+.layout-view-tabs {
+    position: absolute;
+    top: 14px;
+    left: 24px;
+    z-index: 20;
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    background: rgba(8, 15, 29, 0.9);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 14px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.34);
+}
+
+.layout-view-tab {
+    min-width: 112px;
+    padding: 7px 14px 6px;
+    border-radius: 10px;
+    color: var(--text-secondary);
+    text-align: center;
+    text-decoration: none;
+    transition: color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.layout-view-tab:hover {
+    color: var(--text-primary);
+    background: rgba(51, 65, 85, 0.72);
+}
+
+.layout-view-tab.active {
+    color: #fff;
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.95), rgba(8, 145, 178, 0.92));
+    box-shadow: 0 4px 14px rgba(14, 165, 233, 0.28);
+}
+
+.view-tab-label,
+.view-tab-note {
+    display: block;
+    white-space: nowrap;
+}
+
+.view-tab-label {
+    font-size: 0.82rem;
+    font-weight: 700;
+}
+
+.view-tab-note {
+    margin-top: 1px;
+    font-size: 0.62rem;
+    opacity: 0.72;
+}
+
+@media (max-width: 720px) {
+    .layout-view-tabs {
+        top: 10px;
+        left: 50%;
+        transform: translateX(-50%);
+    }
+
+    .layout-view-tab {
+        min-width: 92px;
+        padding-inline: 10px;
+    }
+}
+
 /* HUD Overlay Controls */
 .map-controls {
     position: absolute;
